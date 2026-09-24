@@ -301,7 +301,7 @@ void injected_entry() {
     LOGI("Running in process: '%s'", cmdline);
     
     const char *game_data_dir = "/data/data/com.mobile.legends";
-    std::thread(hack_start, game_data_dir).detach();
+    game_data_dir.detach();
 }
 
 #endif
