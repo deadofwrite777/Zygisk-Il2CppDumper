@@ -41,19 +41,33 @@ jobs:
         file injector_arm64
         ls -la injector_arm64
 
+    - name: Extract arm64-v8a.so from module ZIP
+      run: |
+        echo "=== Finding module ZIP ==="
+        MODULE_ZIP=$(find . -name "*.zip" -path "*/out/*" | head -1)
+        if [ -z "$MODULE_ZIP" ]; then
+          MODULE_ZIP=$(find . -name "*.zip" -path "*/build/*" | head -1)
+        fi
+        if [ -z "$MODULE_ZIP" ]; then
+          MODULE_ZIP=$(find . -name "zygisk-*.zip" | head -1)
+        fi
+        echo "Module ZIP: $MODULE_ZIP"
+        if [ -n "$MODULE_ZIP" ]; then
+          unzip -l "$MODULE_ZIP"
+          unzip -o "$MODULE_ZIP" "zygisk/arm64-v8a.so" -d extracted/
+          ls -la extracted/zygisk/
+        else
+          echo "ERROR: No module ZIP found!"
+          find . -name "*.zip" -not -path "./.git/*"
+          exit 1
+        fi
+
     - name: Collect artifacts
       run: |
         mkdir -p output
-        find . -name "*.zip" -path "*/build/*" -exec cp {} output/ \;
-        find . -name "arm64-v8a.so" -path "*/build/*" -exec cp {} output/ \; 2>/dev/null || true
-        find . -name "arm64-v8a.so" -path "*/release/*" -exec cp {} output/ \; 2>/dev/null || true
-        if [ -f injector_arm64 ]; then
-          cp injector_arm64 output/
-          echo "Injector copied"
-        else
-          echo "ERROR: injector_arm64 not found!"
-          exit 1
-        fi
+        cp extracted/zygisk/arm64-v8a.so output/
+        cp injector_arm64 output/
+        echo "=== Final output ==="
         ls -la output/
 
     - name: Upload artifacts
