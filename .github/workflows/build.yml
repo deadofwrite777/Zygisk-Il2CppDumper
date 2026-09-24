@@ -47,22 +47,16 @@ jobs:
         echo "NDK_DIR=$NDK_DIR" >> $GITHUB_ENV
         echo "Found NDK at: $NDK_DIR"
 
-    - name: Cross-compile injector for ARM64
+    -     - name: Cross-compile injector for ARM64
       run: |
+        NDK_DIR=$(find /usr/local/lib/android/sdk/ndk -maxdepth 1 -type d | sort -V | tail -1)
         CLANG="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang"
-        echo "Using clang: $CLANG"
-        $CLANG -O2 -static -o injector_arm64 injector/injector.c -ldl 2>&1 || true
-        $CLANG -O2 -o injector_arm64 injector/injector.c -ldl 2>&1 || true
-        if [ ! -f injector_arm64 ]; then
-          echo "Trying without -ldl..."
-          $CLANG -O2 -static -o injector_arm64 injector/injector.c 2>&1 || true
-        fi
-        if [ ! -f injector_arm64 ]; then
-          echo "Trying dynamic without -ldl..."
-          $CLANG -O2 -o injector_arm64 injector/injector.c 2>&1
-        fi
-        ls -la injector_arm64
+        SYSROOT="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+        echo "Clang: $CLANG"
+        echo "Sysroot: $SYSROOT"
+        $CLANG --sysroot="$SYSROOT" -O2 -pie -o injector_arm64 injector/injector.c
         file injector_arm64
+        ls -la injector_arm64
 
     - name: Collect artifacts
       run: |
