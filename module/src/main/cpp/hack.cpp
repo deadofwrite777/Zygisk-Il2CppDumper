@@ -16,24 +16,84 @@
 #include <sys/mman.h>
 #include <linux/unistd.h>
 #include <array>
+#include <fstream>
+#include <string>
+
+// Fallback: find library base address by parsing /proc/self/maps
+void *find_library_by_maps(const char *lib_name) {
+    std::ifstream maps("/proc/self/maps");
+    std::string line;
+    while (std::getline(maps, line)) {
+        if (line.find(lib_name) != std::string::npos && line.find("r-xp") != std::string::npos) {
+            // Found executable mapping of our library
+            unsigned long base = std::stoul(line.substr(0, line.find('-')), nullptr, 16);
+            LOGI("Found %s via /proc/self/maps at base 0x%lx", lib_name, base);
+            // Now dlopen it by full path or by name — it should work since it's already loaded
+            void *handle = dlopen(lib_name, RTLD_NOW | RTLD_NOLOAD);
+            if (handle) {
+                LOGI("dlopen(%s, RTLD_NOLOAD) succeeded: %p", lib_name, handle);
+                return handle;
+            }
+            // Try xdl_open as well
+            handle = xdl_open(lib_name, 0);
+            if (handle) {
+                LOGI("xdl_open(%s) succeeded after maps detection: %p", lib_name, handle);
+                return handle;
+            }
+            // Try with full path from the maps line
+            size_t path_start = line.find('/');
+            if (path_start != std::string::npos) {
+                std::string full_path = line.substr(path_start);
+                // Remove trailing whitespace
+                while (!full_path.empty() && (full_path.back() == ' ' || full_path.back() == '\n'))
+                    full_path.pop_back();
+                LOGI("Trying full path: %s", full_path.c_str());
+                handle = dlopen(full_path.c_str(), RTLD_NOW | RTLD_NOLOAD);
+                if (handle) {
+                    LOGI("dlopen(full_path, RTLD_NOLOAD) succeeded: %p", handle);
+                    return handle;
+                }
+                handle = dlopen(full_path.c_str(), RTLD_NOW);
+                if (handle) {
+                    LOGI("dlopen(full_path, RTLD_NOW) succeeded: %p", handle);
+                    return handle;
+                }
+            }
+            LOGI("Library found in maps but all dlopen attempts failed");
+            return nullptr;
+        }
+    }
+    return nullptr;
+}
 
 void hack_start(const char *game_data_dir) {
     bool load = false;
-    for (int i = 0; i < 150; i++) {
+    for (int i = 0; i < 160; i++) {
+        // Method 1: Standard xdl_open
         void *handle = xdl_open("libcsharp.so", 0);
+        
+        // Method 2: Fallback to /proc/self/maps scanning
+        if (!handle) {
+            handle = find_library_by_maps("libcsharp.so");
+        }
+        
         if (handle) {
             load = true;
             LOGI("libcsharp.so FOUND at attempt %d in thread %d", i, gettid());
             il2cpp_api_init(handle);
+            LOGI("il2cpp_api_init completed, starting dump...");
             il2cpp_dump(game_data_dir);
-            LOGI("il2cpp_dump completed");
+            LOGI("il2cpp_dump completed successfully!");
             break;
         } else {
+            if (i % 10 == 0) {
+                LOGI("Attempt %d/160: libcsharp.so not yet loaded...", i);
+            }
             sleep(1);
         }
     }
     if (!load) {
-        LOGI("libcsharp.so not found in thread %d", gettid());
+        LOGI("libcsharp.so not found after 160 attempts in thread %d", gettid());
     }
 }
 
