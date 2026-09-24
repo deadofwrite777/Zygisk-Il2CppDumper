@@ -278,8 +278,31 @@ void hack_prepare(const char *game_data_dir, void *data, size_t length) {
 #if defined(__i386__) || defined(__x86_64__)
     if (!NativeBridgeLoad(game_data_dir, api_level, data, length)) {
 #endif
+        
         hack_start(game_data_dir);
 #if defined(__i386__) || defined(__x86_64__)
     }
 #endif
 }
+
+#if defined(__arm__) || defined(__aarch64__)
+
+__attribute__((constructor))
+void injected_entry() {
+    LOGI("=== INJECTED ENTRY POINT ===");
+    LOGI("Dumper .so loaded via injection into PID %d", getpid());
+    
+    char cmdline[256] = {0};
+    FILE *f = fopen("/proc/self/cmdline", "r");
+    if (f) {
+        fread(cmdline, 1, sizeof(cmdline) - 1, f);
+        fclose(f);
+    }
+    LOGI("Running in process: '%s'", cmdline);
+    
+    const char *game_data_dir = "/data/data/com.mobile.legends";
+    std::thread(hack_start, std::string(game_data_dir)).detach();
+}
+
+#endif
+
