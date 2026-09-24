@@ -26,14 +26,16 @@ static int regs_set(pid_t p, struct a64regs *r) {
     return ptrace(PTRACE_SETREGSET, p, (void*)1, &v);
 }
 
-static unsigned long long find_rxp_base(pid_t pid, const char *name) {
+/* Find the base address of an executable mapping containing `name`.
+   Matches any line with 'xp' in the permissions (covers r-xp AND --xp). */
+static unsigned long long find_exec_base(pid_t pid, const char *name) {
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/maps", pid);
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     char line[512];
     while (fgets(line, sizeof(line), f)) {
-        if (strstr(line, name) && strstr(line, "r-xp")) {
+        if (strstr(line, name) && strstr(line, "xp")) {
             unsigned long long b;
             sscanf(line, "%llx-", &b);
             fclose(f);
@@ -42,6 +44,51 @@ static unsigned long long find_rxp_base(pid_t pid, const char *name) {
     }
     fclose(f);
     return 0;
+}
+
+/* Find the end address of an executable mapping containing `name`. */
+static unsigned long long find_exec_end(pid_t pid, const char *name) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/maps", pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, name) && strstr(line, "xp")) {
+            unsigned long long s, e;
+            sscanf(line, "%llx-%llx", &s, &e);
+            fclose(f);
+            return e;
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+static int find_containing_lib(pid_t pid, unsigned long long addr,
+                               unsigned long long *base, char *out, int outsz) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/maps", pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        unsigned long long s, e;
+        if (sscanf(line, "%llx-%llx", &s, &e) == 2 && addr >= s && addr < e) {
+            *base = s;
+            char *p = strrchr(line, '/');
+            if (p) {
+                p++;
+                char *nl = strchr(p, '\n'); if (nl) *nl = 0;
+                char *sp2 = strchr(p, ' '); if (sp2) *sp2 = 0;
+                strncpy(out, p, outsz - 1);
+            }
+            fclose(f);
+            return 0;
+        }
+    }
+    fclose(f);
+    return -1;
 }
 
 int main(int argc, char *argv[]) {
@@ -54,113 +101,92 @@ int main(int argc, char *argv[]) {
 
     printf("[*] Target PID %d | Library %s\n", tgt, lib);
 
-    /* --- Find dlopen via libc.so (same binary in both processes) --- */
-    unsigned long long our_libc = find_rxp_base(getpid(), "/libc.so");
-    unsigned long long tgt_libc = find_rxp_base(tgt, "/libc.so");
+    /* --- Resolve dlopen in ourselves --- */
+    void *my_dlopen = dlsym(RTLD_DEFAULT, "dlopen");
+    if (!my_dlopen) { fprintf(stderr, "[-] dlsym dlopen\n"); return 1; }
+    printf("[+] Our dlopen: %p\n", my_dlopen);
 
-    if (!our_libc || !tgt_libc) {
-        fprintf(stderr, "[-] libc.so not found. ours=0x%llx target=0x%llx\n",
-                our_libc, tgt_libc);
-        return 1;
-    }
-    printf("[+] libc.so: ours=0x%llx target=0x%llx\n", our_libc, tgt_libc);
+    unsigned long long dlopen_addr = (unsigned long long)my_dlopen;
 
-    /* Try multiple dlopen symbols in order of preference */
-    void *dlopen_ptr = NULL;
-    const char *sym_name = NULL;
+    /* --- Strategy: find which library contains dlopen, compute offset,
+           find same library in target, apply offset --- */
 
-    /* 1. __loader_dlopen — the real implementation inside the linker,
-          but sometimes accessible via libc's PLT */
-    dlopen_ptr = dlsym(RTLD_DEFAULT, "__loader_dlopen");
-    if (dlopen_ptr) { sym_name = "__loader_dlopen"; }
+    /* Try libc.so first (same binary in both processes on same Android) */
+    unsigned long long our_libc = find_exec_base(getpid(), "libc.so");
+    unsigned long long our_libc_end = find_exec_end(getpid(), "libc.so");
+    unsigned long long tgt_libc = find_exec_base(tgt, "libc.so");
 
-    /* 2. dlopen — standard */
-    if (!dlopen_ptr) {
-        dlopen_ptr = dlsym(RTLD_DEFAULT, "dlopen");
-        if (dlopen_ptr) sym_name = "dlopen";
-    }
+    printf("[*] libc.so: ours=0x%llx..0x%llx target=0x%llx\n",
+           our_libc, our_libc_end, tgt_libc);
 
-    if (!dlopen_ptr) {
-        fprintf(stderr, "[-] Cannot resolve any dlopen symbol\n");
-        return 1;
-    }
+    unsigned long long offset = 0;
+    unsigned long long tgt_base = 0;
 
-    unsigned long long dlopen_addr = (unsigned long long)dlopen_ptr;
-    printf("[+] Resolved '%s' at 0x%llx in our process\n", sym_name, dlopen_addr);
-
-    /* Check if dlopen lives within our libc range */
-    unsigned long long offset;
-    unsigned long long tgt_base;
-
-    if (dlopen_addr >= our_libc && dlopen_addr < our_libc + 0x200000) {
-        /* dlopen is inside libc.so — perfect, same binary = same offset */
+    if (our_libc && tgt_libc && dlopen_addr >= our_libc && dlopen_addr < our_libc_end) {
         offset = dlopen_addr - our_libc;
         tgt_base = tgt_libc;
-        printf("[+] '%s' is in libc.so at offset 0x%llx\n", sym_name, offset);
-    } else {
-        /* dlopen is NOT in libc — it's in linker64 or libdl.so
-           We need to use a different strategy: find a libc function
-           that CALLS dlopen, or use mmap+shellcode */
-        printf("[*] '%s' at 0x%llx is NOT in libc (libc=0x%llx)\n",
-               sym_name, dlopen_addr, our_libc);
+        printf("[+] dlopen is in libc.so, offset 0x%llx\n", offset);
+    }
 
-        /* Try to find it in linker64 */
-        unsigned long long our_linker = find_rxp_base(getpid(), "linker64");
-        unsigned long long tgt_linker = find_rxp_base(tgt, "linker64");
+    /* If dlopen isn't in libc, try linker64 */
+    if (!tgt_base) {
+        unsigned long long our_linker = find_exec_base(getpid(), "linker64");
+        unsigned long long our_linker_end = find_exec_end(getpid(), "linker64");
+        unsigned long long tgt_linker = find_exec_base(tgt, "linker64");
+        unsigned long long tgt_linker_end = find_exec_end(tgt, "linker64");
 
-        if (our_linker && tgt_linker &&
-            dlopen_addr >= our_linker && dlopen_addr < our_linker + 0x200000) {
-            offset = dlopen_addr - our_linker;
-            tgt_base = tgt_linker;
-            printf("[+] '%s' is in linker64 at offset 0x%llx\n", sym_name, offset);
-            printf("[!] WARNING: linker64 may differ between processes!\n");
-            printf("[!] Our linker: 0x%llx, Target linker: 0x%llx\n",
-                   our_linker, tgt_linker);
+        printf("[*] linker64: ours=0x%llx..0x%llx target=0x%llx..0x%llx\n",
+               our_linker, our_linker_end, tgt_linker, tgt_linker_end);
 
-            /* Verify both linkers are the same size as a sanity check */
-            char our_path[64], tgt_path2[64];
-            snprintf(our_path, 64, "/proc/%d/maps", getpid());
-            snprintf(tgt_path2, 64, "/proc/%d/maps", tgt);
+        if (our_linker && tgt_linker) {
+            /* Verify both linkers are the same size */
+            unsigned long long our_sz = our_linker_end - our_linker;
+            unsigned long long tgt_sz = tgt_linker_end - tgt_linker;
+            printf("[*] linker64 exec sizes: ours=%llu target=%llu\n", our_sz, tgt_sz);
 
-            /* Read both maps and compare linker64 region sizes */
-            FILE *f1 = fopen(our_path, "r");
-            FILE *f2 = fopen(tgt_path2, "r");
-            unsigned long long our_end = 0, tgt_end = 0;
-            char line[512];
-            if (f1) {
-                while (fgets(line, 512, f1)) {
-                    if (strstr(line, "linker64") && strstr(line, "r-xp")) {
-                        unsigned long long s, e;
-                        sscanf(line, "%llx-%llx", &s, &e);
-                        our_end = e;
-                        break;
-                    }
+            if (our_sz == tgt_sz) {
+                /* Re-resolve dlopen — it might be a PLT stub in libdl.
+                   Get the real implementation inside linker64 */
+                void *handle = dlopen("libdl.so", RTLD_NOW);
+                void *real_dlopen = NULL;
+                if (handle) {
+                    real_dlopen = dlsym(handle, "__loader_dlopen");
+                    if (!real_dlopen) real_dlopen = dlsym(handle, "dlopen");
                 }
-                fclose(f1);
-            }
-            if (f2) {
-                while (fgets(line, 512, f2)) {
-                    if (strstr(line, "linker64") && strstr(line, "r-xp")) {
-                        unsigned long long s, e;
-                        sscanf(line, "%llx-%llx", &s, &e);
-                        tgt_end = e;
-                        break;
-                    }
+                unsigned long long rdl = real_dlopen ? (unsigned long long)real_dlopen : dlopen_addr;
+
+                if (rdl >= our_linker && rdl < our_linker_end) {
+                    offset = rdl - our_linker;
+                    tgt_base = tgt_linker;
+                    printf("[+] dlopen is in linker64, offset 0x%llx\n", offset);
+                } else {
+                    printf("[*] dlopen at 0x%llx is NOT inside linker64 range\n", rdl);
                 }
-                fclose(f2);
+            } else {
+                printf("[-] linker64 size mismatch! Cannot safely use offset.\n");
             }
-            unsigned long long our_sz = our_end - our_linker;
-            unsigned long long tgt_sz = tgt_end - tgt_linker;
-            printf("[*] linker64 sizes: ours=%llu target=%llu\n", our_sz, tgt_sz);
-            if (our_sz != tgt_sz) {
-                fprintf(stderr, "[-] LINKER SIZE MISMATCH — different binaries! "
-                        "Cannot safely compute offset.\n");
-                return 1;
-            }
-        } else {
-            fprintf(stderr, "[-] Cannot locate '%s' in any shared library\n", sym_name);
-            return 1;
         }
+    }
+
+    /* Last resort: use the containing-lib approach */
+    if (!tgt_base) {
+        unsigned long long my_base_auto = 0;
+        char libname[256] = {0};
+        if (find_containing_lib(getpid(), dlopen_addr, &my_base_auto, libname, sizeof(libname)) == 0) {
+            printf("[*] dlopen is in '%s' at base 0x%llx\n", libname, my_base_auto);
+            unsigned long long tgt_auto = find_exec_base(tgt, libname);
+            if (tgt_auto) {
+                offset = dlopen_addr - my_base_auto;
+                tgt_base = tgt_auto;
+                printf("[+] Found '%s' in target at 0x%llx, offset 0x%llx\n",
+                       libname, tgt_auto, offset);
+            }
+        }
+    }
+
+    if (!tgt_base) {
+        fprintf(stderr, "[-] Cannot locate dlopen in target via any method\n");
+        return 1;
     }
 
     unsigned long long tgt_dlopen = tgt_base + offset;
@@ -199,10 +225,10 @@ int main(int argc, char *argv[]) {
     memcpy(&mod, &orig, sizeof(mod));
     mod.x[0]  = sa;          /* arg1: filename */
     mod.x[1]  = 2;           /* arg2: RTLD_NOW */
-    mod.x[2]  = 0;           /* x2: clear (some dlopen variants take 3 args) */
-    mod.x[3]  = 0;           /* x3: clear */
+    mod.x[2]  = 0;           /* clear */
+    mod.x[3]  = 0;           /* clear */
     mod.pc    = tgt_dlopen;  /* jump to dlopen */
-    mod.x[30] = 0;           /* LR=0 → will SIGSEGV on return, we catch it */
+    mod.x[30] = 0;           /* LR=0 -> SIGSEGV on return, we catch it */
 
     if (regs_set(tgt, &mod) < 0) {
         perror("[-] setregs");
@@ -211,12 +237,12 @@ int main(int argc, char *argv[]) {
     }
     printf("[+] Regs set. Running dlopen...\n");
 
-    /* --- Execute dlopen, catch the return-to-0 SIGSEGV --- */
+    /* --- Execute dlopen, wait for return-to-0 fault --- */
     ptrace(PTRACE_CONT, tgt, NULL, NULL);
     waitpid(tgt, &st, 0);
     printf("[+] Stopped. Signal %d\n", WSTOPSIG(st));
 
-    /* --- Read return value --- */
+    /* --- Read return value (x0) --- */
     struct a64regs after;
     regs_get(tgt, &after);
     printf("[+] dlopen returned 0x%llx\n", after.x[0]);
