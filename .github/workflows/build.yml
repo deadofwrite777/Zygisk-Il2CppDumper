@@ -24,36 +24,17 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
-    - name: Set target package name
-      run: |
-        echo "Setting package name to: ${{ github.event.inputs.package_name }}"
-        find . -name "*.h" -path "*/cpp/*" -exec grep -l "GamePackageName\|package" {} \;
-        HACK_FILE="module/src/main/cpp/hack.cpp"
-        if [ -f "$HACK_FILE" ]; then
-          sed -i 's/com\.example\.game/${{ github.event.inputs.package_name }}/g' "$HACK_FILE"
-          sed -i 's/com\.default\.package/${{ github.event.inputs.package_name }}/g' "$HACK_FILE"
-          echo "hack.cpp package references updated"
-        fi
-
     - name: Build Zygisk module with Gradle
       run: |
         chmod +x gradlew
         ./gradlew :module:assembleRelease
 
-    - name: Install Android NDK standalone for injector
-      run: |
-        echo "Using NDK from Gradle build..."
-        NDK_DIR=$(find /usr/local/lib/android/sdk/ndk -maxdepth 1 -type d | sort -V | tail -1)
-        echo "NDK_DIR=$NDK_DIR" >> $GITHUB_ENV
-        echo "Found NDK at: $NDK_DIR"
-
-    -     - name: Cross-compile injector for ARM64
+    - name: Cross-compile injector for ARM64
       run: |
         NDK_DIR=$(find /usr/local/lib/android/sdk/ndk -maxdepth 1 -type d | sort -V | tail -1)
         CLANG="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang"
         SYSROOT="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
         echo "Clang: $CLANG"
-        echo "Sysroot: $SYSROOT"
         $CLANG --sysroot="$SYSROOT" -O2 -pie -o injector_arm64 injector/injector.c
         file injector_arm64
         ls -la injector_arm64
@@ -61,17 +42,16 @@ jobs:
     - name: Collect artifacts
       run: |
         mkdir -p output
-        echo "=== Finding module ZIP ==="
         find . -name "*.zip" -path "*/build/*" -exec cp {} output/ \;
-        find . -name "*.zip" -not -path "./.git/*" -not -path "./output/*" | head -5
-        echo "=== Finding .so files ==="
-        find . -name "arm64-v8a.so" -path "*/release/*" -exec cp {} output/ \; 2>/dev/null || true
         find . -name "arm64-v8a.so" -path "*/build/*" -exec cp {} output/ \; 2>/dev/null || true
+        find . -name "arm64-v8a.so" -path "*/release/*" -exec cp {} output/ \; 2>/dev/null || true
         if [ -f injector_arm64 ]; then
           cp injector_arm64 output/
-          echo "Injector binary copied"
+          echo "Injector copied"
+        else
+          echo "ERROR: injector_arm64 not found!"
+          exit 1
         fi
-        echo "=== Output contents ==="
         ls -la output/
 
     - name: Upload artifacts
