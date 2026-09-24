@@ -95,7 +95,7 @@ int main(int argc, char *argv[]) {
     printf("[+] dlopen lives in '%s', offset 0x%llx (our base 0x%llx)\n",
            libname, offset, my_base);
 
-        unsigned long long tgt_base = find_rxp_base(tgt, libname);
+    unsigned long long tgt_base = find_rxp_base(tgt, libname);
     if (!tgt_base) {
         /* libdl.so not mapped separately in target — dlopen lives in linker64 */
         unsigned long long our_linker = find_rxp_base(getpid(), "linker64");
@@ -103,15 +103,12 @@ int main(int argc, char *argv[]) {
         if (our_linker && tgt_linker) {
             printf("[*] Falling back to linker64: ours=0x%llx target=0x%llx\n",
                    our_linker, tgt_linker);
-            /* Recalculate: use linker64 as the base for the offset */
-            /* But our dlopen might not be in linker64 — re-resolve */
             void *handle = dlopen("libdl.so", 2);
             if (handle) {
                 void *real_dlopen = dlsym(handle, "__loader_dlopen");
                 if (!real_dlopen) real_dlopen = dlsym(handle, "dlopen");
                 if (real_dlopen) {
                     unsigned long long rdl = (unsigned long long)real_dlopen;
-                    /* Check if it falls within our linker64 range */
                     if (rdl >= our_linker) {
                         offset = rdl - our_linker;
                         tgt_base = tgt_linker;
@@ -121,7 +118,7 @@ int main(int argc, char *argv[]) {
             }
         }
         if (!tgt_base) {
-            /* Last resort: try libc.so — some Android versions route dlopen through libc */
+            /* Last resort: try libc.so */
             unsigned long long our_libc = find_rxp_base(getpid(), "libc.so");
             unsigned long long tgt_libc = find_rxp_base(tgt, "libc.so");
             if (our_libc && tgt_libc) {
