@@ -1,4 +1,4 @@
-name: Build
+name: Build Dumper
 
 on:
   workflow_dispatch:
@@ -23,55 +23,27 @@ jobs:
 
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
-      with:
-        packages: 'platform-tools'
 
-    - name: Build Zygisk module with Gradle
+    - name: Build Zygisk module
       run: |
         chmod +x gradlew
         ./gradlew :module:assembleRelease
 
-    - name: Cross-compile injector for ARM64
-      run: |
-        NDK_DIR=$(find /usr/local/lib/android/sdk/ndk -maxdepth 1 -type d | sort -V | tail -1)
-        CLANG="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang"
-        SYSROOT="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-        echo "Clang: $CLANG"
-        $CLANG --sysroot="$SYSROOT" -O2 -pie -o injector_arm64 injector/injector.c
-        file injector_arm64
-        ls -la injector_arm64
-
     - name: Extract arm64-v8a.so from module ZIP
       run: |
-        echo "=== Finding module ZIP ==="
-        MODULE_ZIP=$(find . -name "*.zip" -path "*/out/*" | head -1)
-        if [ -z "$MODULE_ZIP" ]; then
-          MODULE_ZIP=$(find . -name "*.zip" -path "*/build/*" | head -1)
-        fi
+        MODULE_ZIP=$(find . -name "*.zip" -path "*/build/*" -o -name "*.zip" -path "*/out/*" | head -1)
         if [ -z "$MODULE_ZIP" ]; then
           MODULE_ZIP=$(find . -name "zygisk-*.zip" | head -1)
         fi
         echo "Module ZIP: $MODULE_ZIP"
-        if [ -n "$MODULE_ZIP" ]; then
-          unzip -l "$MODULE_ZIP"
-          unzip -o "$MODULE_ZIP" "zygisk/arm64-v8a.so" -d extracted/
-          ls -la extracted/zygisk/
-        else
-          echo "ERROR: No module ZIP found!"
-          find . -name "*.zip" -not -path "./.git/*"
-          exit 1
-        fi
-
-    - name: Collect artifacts
-      run: |
         mkdir -p output
-        cp extracted/zygisk/arm64-v8a.so output/
-        cp injector_arm64 output/
-        echo "=== Final output ==="
+        unzip -o "$MODULE_ZIP" "zygisk/arm64-v8a.so" -d output/
+        mv output/zygisk/arm64-v8a.so output/
+        rm -rf output/zygisk
         ls -la output/
 
-    - name: Upload artifacts
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: mlbb-tools-${{ github.event.inputs.package_name }}
+        name: dumper-${{ github.event.inputs.package_name }}
         path: output/
