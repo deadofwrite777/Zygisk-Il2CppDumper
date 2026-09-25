@@ -289,8 +289,8 @@ void hack_prepare(const char *game_data_dir, void *data, size_t length) {
 
 __attribute__((constructor))
 void injected_entry() {
-    LOGI("=== INJECTED ENTRY POINT ===");
-    LOGI("Dumper .so loaded via injection into PID %d", getpid());
+    LOGI("=== INJECTED ENTRY POINT (constructor) ===");
+    LOGI("Constructor fired in PID %d, TID %d", getpid(), gettid());
     
     char cmdline[256] = {0};
     FILE *f = fopen("/proc/self/cmdline", "r");
@@ -298,12 +298,34 @@ void injected_entry() {
         fread(cmdline, 1, sizeof(cmdline) - 1, f);
         fclose(f);
     }
-    LOGI("Running in process: '%s'", cmdline);
+    LOGI("Constructor process: '%s'", cmdline);
     
     const char *game_data_dir = "/data/data/com.mobile.legends";
-        std::thread(hack_start, game_data_dir).detach();
+    std::thread(hack_start, std::string(game_data_dir)).detach();
+}
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+    LOGI("=== JNI_OnLoad ENTRY ===");
+    LOGI("JNI_OnLoad in PID %d, TID %d", getpid(), gettid());
+    
+    char cmdline[256] = {0};
+    FILE *f = fopen("/proc/self/cmdline", "r");
+    if (f) {
+        fread(cmdline, 1, sizeof(cmdline) - 1, f);
+        fclose(f);
+    }
+    LOGI("JNI_OnLoad process: '%s'", cmdline);
+    
+    if (strstr(cmdline, "UnityKillsMe") != NULL) {
+        LOGI("UnityKillsMe detected! Spawning hack_start thread...");
+        const char *game_data_dir = "/data/data/com.mobile.legends";
+        std::thread(hack_start, std::string(game_data_dir)).detach();
+    } else {
+        LOGI("Not UnityKillsMe ('%s'), JNI_OnLoad skipping hack_start", cmdline);
+    }
+    
+    return JNI_VERSION_1_6;
 }
 
 #endif
-
 
