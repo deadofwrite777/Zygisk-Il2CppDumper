@@ -287,45 +287,9 @@ void hack_prepare(const char *game_data_dir, void *data, size_t length) {
 
 #if defined(__arm__) || defined(__aarch64__)
 
-static void child_fork_handler() {
-    LOGI("=== ATFORK CHILD HANDLER === PID %d", getpid());
-    std::thread([]() {
-        sleep(5);
-        char cmdline[256] = {0};
-        FILE *f = fopen("/proc/self/cmdline", "r");
-        if (f) {
-            fread(cmdline, 1, sizeof(cmdline) - 1, f);
-            fclose(f);
-        }
-        LOGI("Atfork child: '%s' (PID %d)", cmdline, getpid());
-        hack_start("/data/data/com.mobile.legends");
-    }).detach();
-}
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *key) {
+    LOGI("=== JNI_OnLoad ENTRY === PID %d, key=%p", getpid(), key);
 
-__attribute__((constructor))
-void injected_entry() {
-    LOGI("=== INJECTED ENTRY POINT (constructor) ===");
-    LOGI("Constructor fired in PID %d, TID %d", getpid(), gettid());
-    
-    char cmdline[256] = {0};
-    FILE *f = fopen("/proc/self/cmdline", "r");
-    if (f) {
-        fread(cmdline, 1, sizeof(cmdline) - 1, f);
-        fclose(f);
-    }
-    LOGI("Constructor process: '%s'", cmdline);
-    
-    const char *game_data_dir = "/data/data/com.mobile.legends";
-    std::thread(hack_start, game_data_dir).detach();
-    
-    pthread_atfork(NULL, NULL, child_fork_handler);
-    LOGI("pthread_atfork registered");
-}
-
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
-    LOGI("=== JNI_OnLoad ENTRY ===");
-    LOGI("JNI_OnLoad in PID %d, TID %d", getpid(), gettid());
-    
     char cmdline[256] = {0};
     FILE *f = fopen("/proc/self/cmdline", "r");
     if (f) {
@@ -333,17 +297,14 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
         fclose(f);
     }
     LOGI("JNI_OnLoad process: '%s'", cmdline);
-    
-    if (strstr(cmdline, "UnityKillsMe") != NULL) {
-        LOGI("UnityKillsMe detected! Spawning hack_start thread...");
-        const char *game_data_dir = "/data/data/com.mobile.legends";
-        std::thread(hack_start, game_data_dir).detach();
-    } else {
-        LOGI("Not UnityKillsMe ('%s'), JNI_OnLoad skipping hack_start", cmdline);
-    }
-    
+
+    // AndKittyInjector passes key 1337 to confirm injection source
+    // Accept both injector calls (1337) and standard JVM calls (NULL/reserved)
+    LOGI("Spawning hack_start thread...");
+    const char *game_data_dir = "/data/data/com.mobile.legends";
+    std::thread(hack_start, game_data_dir).detach();
+
     return JNI_VERSION_1_6;
 }
 
 #endif
-
