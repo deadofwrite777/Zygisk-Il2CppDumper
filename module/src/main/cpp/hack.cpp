@@ -18,6 +18,7 @@
 #include <array>
 #include <fstream>
 #include <string>
+#include <pthread.h>
 
 void hack_start(const char *game_data_dir) {
     // Log which process we're in
@@ -286,6 +287,21 @@ void hack_prepare(const char *game_data_dir, void *data, size_t length) {
 
 #if defined(__arm__) || defined(__aarch64__)
 
+static void child_fork_handler() {
+    LOGI("=== ATFORK CHILD HANDLER === PID %d", getpid());
+    std::thread([]() {
+        sleep(5);
+        char cmdline[256] = {0};
+        FILE *f = fopen("/proc/self/cmdline", "r");
+        if (f) {
+            fread(cmdline, 1, sizeof(cmdline) - 1, f);
+            fclose(f);
+        }
+        LOGI("Atfork child: '%s' (PID %d)", cmdline, getpid());
+        hack_start("/data/data/com.mobile.legends");
+    }).detach();
+}
+
 __attribute__((constructor))
 void injected_entry() {
     LOGI("=== INJECTED ENTRY POINT (constructor) ===");
@@ -301,6 +317,9 @@ void injected_entry() {
     
     const char *game_data_dir = "/data/data/com.mobile.legends";
     std::thread(hack_start, game_data_dir).detach();
+    
+    pthread_atfork(NULL, NULL, child_fork_handler);
+    LOGI("pthread_atfork registered");
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
@@ -327,3 +346,4 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
 }
 
 #endif
+
