@@ -274,7 +274,6 @@ void hack_prepare(const char *game_data_dir, void *data, size_t length) {
     LOGI("hack thread: %d", gettid());
     int api_level = android_get_device_api_level();
     LOGI("api level: %d", api_level);
-
 #if defined(__i386__) || defined(__x86_64__)
     if (!NativeBridgeLoad(game_data_dir, api_level, data, length)) {
 #endif
@@ -301,7 +300,7 @@ void injected_entry() {
     LOGI("Constructor process: '%s'", cmdline);
     
     const char *game_data_dir = "/data/data/com.mobile.legends";
-    std::thread(hack_start, std::string(game_data_dir)).detach();
+    std::thread(hack_start, game_data_dir).detach();
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
@@ -319,7 +318,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     if (strstr(cmdline, "UnityKillsMe") != NULL) {
         LOGI("UnityKillsMe detected! Spawning hack_start thread...");
         const char *game_data_dir = "/data/data/com.mobile.legends";
-        std::thread(hack_start, std::string(game_data_dir)).detach();
+        std::thread(hack_start, game_data_dir).detach();
     } else {
         LOGI("Not UnityKillsMe ('%s'), JNI_OnLoad skipping hack_start", cmdline);
     }
@@ -328,4 +327,3 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
 }
 
 #endif
-
